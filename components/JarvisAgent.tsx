@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiMic, FiMenu } from 'react-icons/fi';
+import { FiMic, FiMenu, FiSend } from 'react-icons/fi';
 import SlimeSphere from './SlimeSphere';
 import StatusText from './StatusText';
 import { speakText } from '@/lib/utils';
+import { useSpeechRecognition } from 'react-speech-recognition';
 
 interface Property {
   title: string;
@@ -19,139 +20,37 @@ interface Property {
 }
 
 export default function JarvisAgent() {
-  const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState('');
   const [response, setResponse] = useState('');
   const [properties, setProperties] = useState<Property[]>([]);
-  const [transcript, setTranscript] = useState('');
-  const recognitionRef = useRef<any>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [isTTSPlaying, setIsTTSPlaying] = useState(false);
   const [showResponseText, setShowResponseText] = useState(false);
+  const [inputText, setInputText] = useState('');
 
-  useEffect(() => {
-    // Initialize Web Speech API
-    if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      try {
-        const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = false;
-        recognitionRef.current.interimResults = true;
-        recognitionRef.current.lang = 'en-US';
+  // Use react-speech-recognition for better mobile support
+  const {
+    transcript,
+    listening: isListening,
+    resetTranscript,
+    browserSupportsSpeechRecognition,
+    startListening,
+    stopListening
+  } = useSpeechRecognition();
 
-        recognitionRef.current.onresult = (event: any) => {
-          let finalTranscript = '';
-          Array.from(event.results).forEach((result: any) => {
-            finalTranscript += result[0].transcript;
-          });
-          setTranscript(finalTranscript);
-          
-          // If result is final, process the query
-          if (event.results[event.results.length - 1]?.isFinal && finalTranscript.trim()) {
-            setTimeout(() => {
-              handleQuery(finalTranscript.trim());
-            }, 100);
-          }
-        };
-
-        recognitionRef.current.onend = () => {
-          setIsListening(false);
-          // Fallback: if no final result but we have transcript, process it
-          if (transcript.trim() && !isProcessing) {
-            setTimeout(() => {
-              handleQuery(transcript.trim());
-            }, 200);
-          }
-        };
-
-        recognitionRef.current.onerror = (event: any) => {
-          setIsListening(false);
-          // Handle different error types gracefully
-          if (event.error === 'network') {
-            setStatus('Network error. Please check your connection and try again.');
-          } else if (event.error === 'no-speech') {
-            setStatus('No speech detected. Please try again.');
-          } else if (event.error === 'aborted') {
-            // User stopped, don't show error
-            setStatus('');
-          } else {
-            setStatus('Speech recognition error. You can type your query instead.');
-          }
-          console.error('Speech recognition error:', event.error);
-        };
-      } catch (error) {
-        console.error('Failed to initialize speech recognition:', error);
-        setStatus('Speech recognition not available. Please use text input.');
-      }
-    } else {
-      setStatus('Speech recognition not supported in this browser. Please use text input.');
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          // Ignore errors on cleanup
-        }
-      }
-    };
-  }, []);
-
-  const startListening = () => {
-    if (!recognitionRef.current) {
-      setStatus('Initializing speech recognition...');
-      // Try to reinitialize
-      if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-        const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = false;
-        recognitionRef.current.interimResults = true;
-        recognitionRef.current.lang = 'en-US';
-        
-        recognitionRef.current.onresult = (event: any) => {
-          let finalTranscript = '';
-          Array.from(event.results).forEach((result: any) => {
-            finalTranscript += result[0].transcript;
-          });
-          setTranscript(finalTranscript);
-        };
-
-        recognitionRef.current.onend = () => {
-          setIsListening(false);
-        };
-
-        recognitionRef.current.onerror = (event: any) => {
-          setIsListening(false);
-          if (event.error !== 'aborted') {
-            setStatus('Speech error. Try typing instead.');
-          }
-        };
-      }
-    }
+  // Store handleQuery in ref to avoid dependency issues
+  const handleQueryRef = useRef<typeof handleQuery>();
+  
+  const handleQuery = useCallback(async (query: string) => {
+    if (!query.trim()) return;
     
-    if (recognitionRef.current) {
-      try {
-        setTranscript('');
-        setIsListening(true);
-        setStatus('Listening... Speak now');
-        recognitionRef.current.start();
-      } catch (error) {
-        console.error('Error starting recognition:', error);
-        setStatus('Unable to start listening. Please use text input.');
-        setIsListening(false);
-      }
-    } else {
-      setStatus('Speech recognition not available. Please use text input.');
-    }
-  };
-
-  const handleQuery = async (query: string) => {
     setIsProcessing(true);
     setResponse('');
     setShowResponseText(false);
     setIsTTSPlaying(false);
+    setInputText('');
+    resetTranscript();
     
     // Check if user wants to open links
     const openLinksIntent = /yes|open|show|view|sure|go ahead|ok|okay/i.test(query);
@@ -241,20 +140,67 @@ export default function JarvisAgent() {
       setIsProcessing(false);
       console.error('Error:', error);
     }
-  };
+  }, [properties, resetTranscript]);
+
+  // Update ref when handleQuery changes
+  useEffect(() => {
+    handleQueryRef.current = handleQuery;
+  }, [handleQuery]);
+
+  // Process transcript when it changes and is final
+  useEffect(() => {
+    if (transcript && !isListening && transcript.trim() && !isProcessing) {
+      // Small delay to ensure transcript is complete
+      const timer = setTimeout(() => {
+        if (transcript.trim() && handleQueryRef.current) {
+          handleQueryRef.current(transcript.trim());
+          resetTranscript();
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [transcript, isListening, isProcessing, resetTranscript]);
+
+  const handleStartListening = useCallback(() => {
+    if (!browserSupportsSpeechRecognition) {
+      setStatus('');
+      return;
+    }
+    
+    try {
+      resetTranscript();
+      setInputText('');
+      setStatus('Listening...');
+      startListening();
+    } catch (error) {
+      console.error('Error starting recognition:', error);
+      setStatus('');
+    }
+  }, [browserSupportsSpeechRecognition, startListening, resetTranscript]);
+
+  const handleStopListening = useCallback(() => {
+    try {
+      stopListening();
+      setStatus('');
+    } catch (error) {
+      console.error('Error stopping recognition:', error);
+    }
+  }, [stopListening]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#0f0f1a] to-[#0a0a0a] text-white relative overflow-hidden">
-      {/* Animated grid background */}
-      <div className="absolute inset-0 opacity-10">
-        <div className="absolute inset-0" style={{
-          backgroundImage: `
-            linear-gradient(rgba(0, 255, 136, 0.1) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0, 255, 136, 0.1) 1px, transparent 1px)
-          `,
-          backgroundSize: '50px 50px',
-        }} />
-      </div>
+      {/* Animated grid background - simplified for mobile */}
+      {typeof window !== 'undefined' && window.innerWidth > 640 && (
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute inset-0" style={{
+            backgroundImage: `
+              linear-gradient(rgba(0, 255, 136, 0.1) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(0, 255, 136, 0.1) 1px, transparent 1px)
+            `,
+            backgroundSize: '50px 50px',
+          }} />
+        </div>
+      )}
 
       {/* Enhanced background gradient effects with animation */}
       <div className="absolute inset-0 overflow-hidden">
@@ -288,16 +234,16 @@ export default function JarvisAgent() {
         />
       </div>
 
-      {/* Particle effects */}
-      {typeof window !== 'undefined' && (
+      {/* Particle effects - reduced for mobile performance */}
+      {typeof window !== 'undefined' && window.innerWidth > 640 && (
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          {Array.from({ length: 20 }).map((_, i) => (
+          {Array.from({ length: 10 }).map((_, i) => (
             <motion.div
               key={i}
               className="absolute w-1 h-1 bg-[#00ff88] rounded-full"
               initial={{
-                x: Math.random() * (typeof window !== 'undefined' ? window.innerWidth : 1920),
-                y: Math.random() * (typeof window !== 'undefined' ? window.innerHeight : 1080),
+                x: Math.random() * window.innerWidth,
+                y: Math.random() * window.innerHeight,
                 opacity: 0,
               }}
               animate={{
@@ -361,15 +307,15 @@ export default function JarvisAgent() {
           />
         </motion.div>
 
-        {/* User messages/transcript */}
-        {transcript && !showResponseText && (
+        {/* User messages/transcript - show while listening or after */}
+        {(isListening || (transcript && !showResponseText)) && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="mt-6 max-w-lg w-full px-4"
           >
             <p className="text-white/70 text-sm leading-relaxed text-left">
-              {transcript}
+              {isListening ? (transcript || 'Listening...') : transcript}
             </p>
           </motion.div>
         )}
@@ -441,15 +387,16 @@ export default function JarvisAgent() {
           <div className="flex items-center justify-center">
             {/* Microphone button - large and prominent */}
             <motion.button
-              onClick={startListening}
-              disabled={isListening || isProcessing || isTTSPlaying}
-              whileHover={{ scale: isListening || isProcessing || isTTSPlaying ? 1 : 1.1 }}
+              onClick={isListening ? handleStopListening : handleStartListening}
+              disabled={isProcessing || isTTSPlaying}
+              whileHover={{ scale: (isListening || isProcessing || isTTSPlaying) ? 1 : 1.1 }}
               whileTap={{ scale: 0.9 }}
               className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all ${
                 isListening || isProcessing || isTTSPlaying
                   ? 'bg-[#00ff88] text-black shadow-[0_0_30px_rgba(0,255,136,0.8)]'
                   : 'bg-[#00ff88]/20 text-[#00ff88] border-2 border-[#00ff88]/50 hover:bg-[#00ff88]/30 hover:shadow-[0_0_20px_rgba(0,255,136,0.5)]'
-              } flex items-center justify-center`}
+              } flex items-center justify-center touch-manipulation`}
+              style={{ WebkitTapHighlightColor: 'transparent' }}
             >
               <FiMic size={24} className="sm:w-7 sm:h-7" />
               {(isListening || isProcessing || isTTSPlaying) && (
@@ -462,21 +409,44 @@ export default function JarvisAgent() {
             </motion.button>
           </div>
 
-          {/* Hidden text input for typing */}
-          <div className="mt-4">
-            <input
-              type="text"
-              value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && transcript.trim()) {
-                  handleQuery(transcript);
-                  setTranscript('');
-                }
-              }}
-              placeholder="Type your query..."
-              className="w-full bg-black/30 border border-white/10 rounded-lg px-4 py-2 text-white placeholder-white/40 outline-none focus:border-[#00ff88]/50 transition-colors text-sm"
-            />
+          {/* Text input with send button */}
+          <div className="mt-4 relative">
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                value={inputText || transcript}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && (inputText.trim() || transcript.trim())) {
+                    const query = inputText.trim() || transcript.trim();
+                    handleQuery(query);
+                    setInputText('');
+                    resetTranscript();
+                  }
+                }}
+                placeholder="Type or speak your query..."
+                className="w-full bg-black/30 border border-white/10 rounded-lg px-4 pr-12 py-2.5 sm:py-3 text-white placeholder-white/40 outline-none focus:border-[#00ff88]/50 transition-colors text-sm"
+              />
+              <motion.button
+                onClick={() => {
+                  const query = inputText.trim() || transcript.trim();
+                  if (query) {
+                    handleQuery(query);
+                    setInputText('');
+                    resetTranscript();
+                  }
+                }}
+                disabled={!inputText.trim() && !transcript.trim()}
+                whileTap={{ scale: 0.9 }}
+                className={`absolute right-2 p-2 rounded-lg transition-all ${
+                  (inputText.trim() || transcript.trim())
+                    ? 'bg-[#00ff88] text-black hover:bg-[#00ff88]/90'
+                    : 'bg-white/10 text-white/30 cursor-not-allowed'
+                }`}
+              >
+                <FiSend size={18} />
+              </motion.button>
+            </div>
           </div>
         </div>
       </div>
