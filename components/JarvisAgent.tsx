@@ -39,7 +39,7 @@ export default function JarvisAgent() {
   } = useSpeechRecognition();
 
   // Store handleQuery in ref to avoid dependency issues
-  const handleQueryRef = useRef<typeof handleQuery>();
+  const handleQueryRef = useRef<((query: string) => Promise<void>) | undefined>(undefined);
   
   const handleQuery = useCallback(async (query: string) => {
     if (!query.trim()) return;
