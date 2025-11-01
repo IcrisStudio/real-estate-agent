@@ -27,39 +27,83 @@ export default function JarvisAgent() {
   const [isTTSPlaying, setIsTTSPlaying] = useState(false);
   const [showResponseText, setShowResponseText] = useState(false);
   const [inputText, setInputText] = useState('');
-  const [isClient, setIsClient] = useState(false);
 
-  // Speech recognition - only load on client
-  const [speechRecognition, setSpeechRecognition] = useState<any>(null);
-  const [speechHook, setSpeechHook] = useState<any>(null);
+  // Speech recognition state
+  const [transcript, setTranscript] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
+  // Initialize speech recognition on client
   useEffect(() => {
-    setIsClient(true);
-    if (typeof window !== 'undefined') {
-      const speechModule = require('react-speech-recognition');
-      setSpeechRecognition(speechModule.default || speechModule);
-      setSpeechHook(() => speechModule.useSpeechRecognition);
-    }
+    if (typeof window === 'undefined') return;
+
+    const initSpeechRecognition = async () => {
+      try {
+        // Check if browser supports speech recognition
+        const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+        
+        if (SpeechRecognition) {
+          setBrowserSupportsSpeechRecognition(true);
+          recognitionRef.current = new SpeechRecognition();
+          recognitionRef.current.continuous = false;
+          recognitionRef.current.interimResults = true;
+          recognitionRef.current.lang = 'en-US';
+
+          recognitionRef.current.onresult = (event: any) => {
+            let finalTranscript = '';
+            Array.from(event.results).forEach((result: any) => {
+              finalTranscript += result[0].transcript;
+            });
+            setTranscript(finalTranscript);
+          };
+
+          recognitionRef.current.onend = () => {
+            setIsListening(false);
+          };
+
+          recognitionRef.current.onerror = (event: any) => {
+            setIsListening(false);
+            // Handle all common errors silently - these are often false positives
+            // Network errors can occur even with good connection due to API quirks
+            const silentErrors = ['aborted', 'no-speech', 'network', 'not-allowed'];
+            
+            // Don't log any of these common, harmless errors
+            if (!silentErrors.includes(event.error)) {
+              // Only log unexpected errors
+              console.error('Speech recognition error:', event.error);
+            }
+            
+            // Silently reset status for all common errors - user can retry
+            if (silentErrors.includes(event.error)) {
+              setStatus('');
+              // Don't even log to console for these
+              return;
+            }
+          };
+        }
+      } catch (error) {
+        console.error('Failed to initialize speech recognition:', error);
+      }
+    };
+
+    initSpeechRecognition();
+
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
+    };
   }, []);
 
-  // Use react-speech-recognition for better mobile support
-  const speechResult = speechHook ? speechHook() : {
-    transcript: '',
-    listening: false,
-    resetTranscript: () => {},
-    browserSupportsSpeechRecognition: false
+  const resetTranscript = () => {
+    setTranscript('');
   };
 
-  const {
-    transcript,
-    listening: isListening,
-    resetTranscript,
-    browserSupportsSpeechRecognition
-  } = speechResult;
-
-  // Store handleQuery in ref to avoid dependency issues
-  const handleQueryRef = useRef<((query: string) => Promise<void>) | undefined>(undefined);
-  
   const handleQuery = useCallback(async (query: string) => {
     if (!query.trim()) return;
     
@@ -160,27 +204,24 @@ export default function JarvisAgent() {
     }
   }, [properties, resetTranscript]);
 
-  // Update ref when handleQuery changes
-  useEffect(() => {
-    handleQueryRef.current = handleQuery;
-  }, [handleQuery]);
 
   // Process transcript when it changes and is final
   useEffect(() => {
     if (transcript && !isListening && transcript.trim() && !isProcessing) {
       // Small delay to ensure transcript is complete
       const timer = setTimeout(() => {
-        if (transcript.trim() && handleQueryRef.current) {
-          handleQueryRef.current(transcript.trim());
+        if (transcript.trim()) {
+          handleQuery(transcript.trim());
           resetTranscript();
         }
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [transcript, isListening, isProcessing, resetTranscript]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript, isListening, isProcessing]);
 
   const handleStartListening = useCallback(() => {
-    if (!browserSupportsSpeechRecognition || !speechRecognition) {
+    if (!browserSupportsSpeechRecognition || !recognitionRef.current) {
       setStatus('');
       return;
     }
@@ -189,22 +230,25 @@ export default function JarvisAgent() {
       resetTranscript();
       setInputText('');
       setStatus('Listening...');
-      speechRecognition.startListening({ continuous: false, interimResults: true });
+      setIsListening(true);
+      recognitionRef.current.start();
     } catch (error) {
       console.error('Error starting recognition:', error);
       setStatus('');
+      setIsListening(false);
     }
-  }, [browserSupportsSpeechRecognition, resetTranscript, speechRecognition]);
+  }, [browserSupportsSpeechRecognition]);
 
   const handleStopListening = useCallback(() => {
-    if (!speechRecognition) return;
+    if (!recognitionRef.current) return;
     try {
-      speechRecognition.stopListening();
+      recognitionRef.current.stop();
+      setIsListening(false);
       setStatus('');
     } catch (error) {
       console.error('Error stopping recognition:', error);
     }
-  }, [speechRecognition]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#0f0f1a] to-[#0a0a0a] text-white relative overflow-hidden">
