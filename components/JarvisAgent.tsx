@@ -7,6 +7,7 @@ import SlimeSphere from './SlimeSphere';
 import StatusText from './StatusText';
 import { speakText } from '@/lib/utils';
 import { useSpeechRecognition } from 'react-speech-recognition';
+import SpeechRecognition from 'react-speech-recognition';
 
 interface Property {
   title: string;
@@ -34,9 +35,7 @@ export default function JarvisAgent() {
     transcript,
     listening: isListening,
     resetTranscript,
-    browserSupportsSpeechRecognition,
-    startListening,
-    stopListening
+    browserSupportsSpeechRecognition
   } = useSpeechRecognition();
 
   // Store handleQuery in ref to avoid dependency issues
@@ -171,21 +170,21 @@ export default function JarvisAgent() {
       resetTranscript();
       setInputText('');
       setStatus('Listening...');
-      startListening();
+      SpeechRecognition.startListening({ continuous: false, interimResults: true });
     } catch (error) {
       console.error('Error starting recognition:', error);
       setStatus('');
     }
-  }, [browserSupportsSpeechRecognition, startListening, resetTranscript]);
+  }, [browserSupportsSpeechRecognition, resetTranscript]);
 
   const handleStopListening = useCallback(() => {
     try {
-      stopListening();
+      SpeechRecognition.stopListening();
       setStatus('');
     } catch (error) {
       console.error('Error stopping recognition:', error);
     }
-  }, [stopListening]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#0f0f1a] to-[#0a0a0a] text-white relative overflow-hidden">
