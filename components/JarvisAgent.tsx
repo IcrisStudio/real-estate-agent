@@ -6,8 +6,6 @@ import { FiMic, FiMenu, FiSend } from 'react-icons/fi';
 import SlimeSphere from './SlimeSphere';
 import StatusText from './StatusText';
 import { speakText } from '@/lib/utils';
-import { useSpeechRecognition } from 'react-speech-recognition';
-import SpeechRecognition from 'react-speech-recognition';
 
 interface Property {
   title: string;
@@ -29,14 +27,35 @@ export default function JarvisAgent() {
   const [isTTSPlaying, setIsTTSPlaying] = useState(false);
   const [showResponseText, setShowResponseText] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [isClient, setIsClient] = useState(false);
+
+  // Speech recognition - only load on client
+  const [speechRecognition, setSpeechRecognition] = useState<any>(null);
+  const [speechHook, setSpeechHook] = useState<any>(null);
+
+  useEffect(() => {
+    setIsClient(true);
+    if (typeof window !== 'undefined') {
+      const speechModule = require('react-speech-recognition');
+      setSpeechRecognition(speechModule.default || speechModule);
+      setSpeechHook(() => speechModule.useSpeechRecognition);
+    }
+  }, []);
 
   // Use react-speech-recognition for better mobile support
+  const speechResult = speechHook ? speechHook() : {
+    transcript: '',
+    listening: false,
+    resetTranscript: () => {},
+    browserSupportsSpeechRecognition: false
+  };
+
   const {
     transcript,
     listening: isListening,
     resetTranscript,
     browserSupportsSpeechRecognition
-  } = useSpeechRecognition();
+  } = speechResult;
 
   // Store handleQuery in ref to avoid dependency issues
   const handleQueryRef = useRef<((query: string) => Promise<void>) | undefined>(undefined);
@@ -161,7 +180,7 @@ export default function JarvisAgent() {
   }, [transcript, isListening, isProcessing, resetTranscript]);
 
   const handleStartListening = useCallback(() => {
-    if (!browserSupportsSpeechRecognition) {
+    if (!browserSupportsSpeechRecognition || !speechRecognition) {
       setStatus('');
       return;
     }
@@ -170,21 +189,22 @@ export default function JarvisAgent() {
       resetTranscript();
       setInputText('');
       setStatus('Listening...');
-      SpeechRecognition.startListening({ continuous: false, interimResults: true });
+      speechRecognition.startListening({ continuous: false, interimResults: true });
     } catch (error) {
       console.error('Error starting recognition:', error);
       setStatus('');
     }
-  }, [browserSupportsSpeechRecognition, resetTranscript]);
+  }, [browserSupportsSpeechRecognition, resetTranscript, speechRecognition]);
 
   const handleStopListening = useCallback(() => {
+    if (!speechRecognition) return;
     try {
-      SpeechRecognition.stopListening();
+      speechRecognition.stopListening();
       setStatus('');
     } catch (error) {
       console.error('Error stopping recognition:', error);
     }
-  }, []);
+  }, [speechRecognition]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#0f0f1a] to-[#0a0a0a] text-white relative overflow-hidden">
