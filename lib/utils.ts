@@ -19,9 +19,10 @@ export function calculatePropertyMetrics(price: number, arv: number, repairs: nu
   };
 }
 
-export async function speakText(text: string): Promise<{ audio: HTMLAudioElement, promise: Promise<void> }> {
+export async function speakText(text: string, model: string = 'Justin'): Promise<{ audio: HTMLAudioElement, promise: Promise<void> }> {
   const encodedText = encodeTextForTTS(text);
-  const ttsUrl = `https://icrisstudio1.pythonanywhere.com/api/tts?text=${encodedText}`;
+  const encodedModel = encodeURIComponent(model);
+  const ttsUrl = `https://icrisstudio1.pythonanywhere.com/api/tts?text=${encodedText}&model=${encodedModel}`;
   
   const audio = new Audio(ttsUrl);
   

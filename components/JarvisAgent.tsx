@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiMic, FiMenu, FiSend } from 'react-icons/fi';
+import { FiSend } from 'react-icons/fi';
 import SlimeSphere from './SlimeSphere';
 import StatusText from './StatusText';
 import { speakText } from '@/lib/utils';
@@ -27,12 +27,14 @@ export default function JarvisAgent() {
   const [isTTSPlaying, setIsTTSPlaying] = useState(false);
   const [showResponseText, setShowResponseText] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [hasStarted, setHasStarted] = useState(false);
 
   // Speech recognition state
   const [transcript, setTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const sessionIdRef = useRef<string>('');
 
   // Initialize speech recognition on client
   useEffect(() => {
@@ -40,6 +42,24 @@ export default function JarvisAgent() {
 
     const initSpeechRecognition = async () => {
       try {
+        // Generate or restore a session id (kept across refreshes for continuity)
+        try {
+          const existing = window.localStorage.getItem('jarvis_session_id');
+          if (existing) {
+            sessionIdRef.current = existing;
+          } else {
+            // Prefer crypto.randomUUID when available
+            const sid = (window.crypto && 'randomUUID' in window.crypto)
+              ? (window.crypto as any).randomUUID()
+              : `sess_${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+            sessionIdRef.current = sid;
+            window.localStorage.setItem('jarvis_session_id', sid);
+          }
+        } catch (_) {
+          // Fallback: ephemeral session if localStorage unavailable
+          sessionIdRef.current = `sess_${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+        }
+
         // Check if browser supports speech recognition
         const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
         
@@ -104,6 +124,24 @@ export default function JarvisAgent() {
     setTranscript('');
   };
 
+  const handleStartListening = useCallback(() => {
+    if (!browserSupportsSpeechRecognition || !recognitionRef.current) {
+      setStatus('');
+      return;
+    }
+    try {
+      resetTranscript();
+      setInputText('');
+      setStatus('Listening...');
+      setIsListening(true);
+      recognitionRef.current.start();
+    } catch (error) {
+      console.error('Error starting recognition:', error);
+      setStatus('');
+      setIsListening(false);
+    }
+  }, [browserSupportsSpeechRecognition]);
+
   const handleQuery = useCallback(async (query: string) => {
     if (!query.trim()) return;
     
@@ -114,78 +152,73 @@ export default function JarvisAgent() {
     setInputText('');
     resetTranscript();
     
-    // Check if user wants to open links
-    const openLinksIntent = /yes|open|show|view|sure|go ahead|ok|okay/i.test(query);
-    if (openLinksIntent && properties.length > 0) {
-      properties.forEach((prop: Property) => {
-        window.open(prop.url, '_blank');
-      });
-      setStatus('Opening property links...');
-      setTimeout(() => {
-        setStatus('');
-        setIsProcessing(false);
-      }, 1000);
-      return;
-    }
-    
-    const statuses = [
-      'Analyzing query...',
-      'Crafting search queries...',
-      'Searching for properties...',
-      'Scraping websites...',
-      'Analyzing property data...',
-      'Calculating profits...',
-      'Finalizing results...'
-    ];
-
-    let statusIndex = 0;
-    const statusInterval = setInterval(() => {
-      if (statusIndex < statuses.length) {
-        setStatus(statuses[statusIndex]);
-        statusIndex++;
-      }
-    }, 2000);
-
     try {
-      const res = await fetch('/api/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+      const baseUrl = 'https://scott-realstate-project.app.n8n.cloud/webhook/52c7625a-d53b-4895-a584-0951d5dc1ad0';
+      const url = `${baseUrl}?${new URLSearchParams({ query, sessionId: sessionIdRef.current })}`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'x-session-id': sessionIdRef.current,
+          'x-client': 'jarvis-ui',
+          'x-timestamp': new Date().toISOString(),
+        },
       });
-
-      clearInterval(statusInterval);
 
       if (!res.ok) {
         throw new Error('Failed to process query');
       }
 
-      const data = await res.json();
-      
-      setStatus('Completed');
-      setProperties(data.properties || []);
-      setResponse(data.response || '');
+      // Parse webhook response and extract output text robustly
+      let outputText = '';
+      const contentType = res.headers.get('content-type') || '';
+      let parsed: any;
+      if (contentType.includes('application/json')) {
+        parsed = await res.json().catch(() => undefined);
+      } else {
+        const txt = await res.text();
+        try { parsed = JSON.parse(txt); } catch { parsed = txt; }
+      }
+
+      if (Array.isArray(parsed) && parsed.length && typeof parsed[0]?.output === 'string') {
+        outputText = parsed[0].output;
+      } else if (parsed && Array.isArray(parsed.item) && parsed.item.length && typeof parsed.item[0]?.output === 'string') {
+        outputText = parsed.item[0].output;
+      } else if (parsed && typeof parsed.output === 'string') {
+        outputText = parsed.output;
+      } else if (typeof parsed === 'string' && parsed.trim()) {
+        outputText = parsed.trim();
+      } else {
+        outputText = 'Got it. What would you like to do next?';
+      }
+
+      setStatus('Speaking...');
+      setResponse(outputText);
 
       // Speak the response and show text DURING TTS
-      if (data.response) {
+      if (outputText) {
         setIsTTSPlaying(true);
         setIsProcessing(true);
         setShowResponseText(true); // Show text while TTS is playing
         
         try {
-          const { promise } = await speakText(data.response);
+          const { promise } = await speakText(outputText, 'Justin');
           
           // Wait for audio to finish
           await promise;
           
-          // TTS finished, hide the text
+          // TTS finished, hide the text and go back to listening
           setIsTTSPlaying(false);
           setShowResponseText(false);
           setResponse('');
+          setStatus('Listening...');
+          handleStartListening();
         } catch (error) {
           console.error('TTS error:', error);
           setIsTTSPlaying(false);
           setShowResponseText(false);
           setResponse('');
+          setStatus('Listening...');
+          handleStartListening();
         }
       } else {
         setResponse('');
@@ -193,16 +226,14 @@ export default function JarvisAgent() {
       }
 
       setTimeout(() => {
-        setStatus('');
         setIsProcessing(false);
-      }, 500);
+      }, 300);
     } catch (error) {
-      clearInterval(statusInterval);
       setStatus('Error processing request');
       setIsProcessing(false);
       console.error('Error:', error);
     }
-  }, [properties, resetTranscript]);
+  }, [resetTranscript, handleStartListening]);
 
 
   // Process transcript when it changes and is final
@@ -220,24 +251,7 @@ export default function JarvisAgent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcript, isListening, isProcessing]);
 
-  const handleStartListening = useCallback(() => {
-    if (!browserSupportsSpeechRecognition || !recognitionRef.current) {
-      setStatus('');
-      return;
-    }
-    
-    try {
-      resetTranscript();
-      setInputText('');
-      setStatus('Listening...');
-      setIsListening(true);
-      recognitionRef.current.start();
-    } catch (error) {
-      console.error('Error starting recognition:', error);
-      setStatus('');
-      setIsListening(false);
-    }
-  }, [browserSupportsSpeechRecognition]);
+  
 
   const handleStopListening = useCallback(() => {
     if (!recognitionRef.current) return;
@@ -323,40 +337,25 @@ export default function JarvisAgent() {
         </div>
       )}
 
-      {/* Top bar */}
-      <div className="relative z-10 flex justify-between items-center p-4 sm:p-6">
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="px-4 py-2 rounded-full border border-[#00ff88]/30 text-[#00ff88] text-xs sm:text-sm hover:bg-[#00ff88]/10 transition-all backdrop-blur-sm"
-        >
-          Done
-        </motion.button>
-        <motion.button
-          onClick={() => setShowMenu(!showMenu)}
-          whileHover={{ scale: 1.1, rotate: 90 }}
-          whileTap={{ scale: 0.9 }}
-          className="text-white/80 hover:text-[#00ff88] transition-colors p-2"
-        >
-          <FiMenu size={20} className="sm:w-6 sm:h-6" />
-        </motion.button>
-      </div>
-
-      {/* Main content */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-[calc(100vh-140px)] px-4 pb-32 sm:pb-24">
-        {/* Listening prompt above sphere */}
-        {(isListening || isTTSPlaying) && (
-          <motion.p
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="text-white/80 text-sm mb-6 text-center"
+      {/* Start screen */}
+      {!hasStarted && (
+        <div className="relative z-10 flex flex-col items-center justify-center min-h-[60vh] px-4">
+          <motion.h1 initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} className="text-white/90 text-lg mb-6">Ready to start a conversation?</motion.h1>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => { setHasStarted(true); handleStartListening(); }}
+            className="px-5 py-3 rounded-full border border-[#00ff88]/50 text-[#00ff88] text-sm hover:bg-[#00ff88]/10 transition-all backdrop-blur-sm"
           >
-            {isListening ? "Listening..." : "Speaking..."}
-          </motion.p>
-        )}
+            Start Conversation
+          </motion.button>
+        </div>
+      )}
 
+      {/* Conversation content */}
+      <div className="relative z-10 flex flex-col items-center justify-center min-h-[calc(100vh-140px)] px-4 pb-32 sm:pb-24">
         {/* Slime Sphere in center */}
+        {hasStarted && (
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -369,9 +368,21 @@ export default function JarvisAgent() {
             size={280}
           />
         </motion.div>
+        )}
+
+        {/* Status centered below the slime */}
+        {hasStarted && (
+          <motion.p
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-white/80 text-sm mt-2 text-center"
+          >
+            {isTTSPlaying ? 'Speaking...' : (isListening ? 'Listening...' : (status || ''))}
+          </motion.p>
+        )}
 
         {/* User messages/transcript - show while listening or after */}
-        {(isListening || (transcript && !showResponseText)) && (
+        {hasStarted && (isListening || (transcript && !showResponseText)) && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -444,75 +455,7 @@ export default function JarvisAgent() {
         </AnimatePresence>
       </div>
 
-      {/* Bottom control bar - like in the image */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 pb-6 sm:pb-8 z-10">
-        <div className="max-w-md mx-auto">
-          <div className="flex items-center justify-center">
-            {/* Microphone button - large and prominent */}
-            <motion.button
-              onClick={isListening ? handleStopListening : handleStartListening}
-              disabled={isProcessing || isTTSPlaying}
-              whileHover={{ scale: (isListening || isProcessing || isTTSPlaying) ? 1 : 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all ${
-                isListening || isProcessing || isTTSPlaying
-                  ? 'bg-[#00ff88] text-black shadow-[0_0_30px_rgba(0,255,136,0.8)]'
-                  : 'bg-[#00ff88]/20 text-[#00ff88] border-2 border-[#00ff88]/50 hover:bg-[#00ff88]/30 hover:shadow-[0_0_20px_rgba(0,255,136,0.5)]'
-              } flex items-center justify-center touch-manipulation`}
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              <FiMic size={24} className="sm:w-7 sm:h-7" />
-              {(isListening || isProcessing || isTTSPlaying) && (
-                <motion.div
-                  className="absolute inset-0 rounded-full border-2 border-[#00ff88]"
-                  animate={{ scale: [1, 1.5, 1], opacity: [1, 0, 1] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                />
-              )}
-            </motion.button>
-          </div>
-
-          {/* Text input with send button */}
-          <div className="mt-4 relative">
-            <div className="relative flex items-center">
-              <input
-                type="text"
-                value={inputText || transcript}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && (inputText.trim() || transcript.trim())) {
-                    const query = inputText.trim() || transcript.trim();
-                    handleQuery(query);
-                    setInputText('');
-                    resetTranscript();
-                  }
-                }}
-                placeholder="Type or speak your query..."
-                className="w-full bg-black/30 border border-white/10 rounded-lg px-4 pr-12 py-2.5 sm:py-3 text-white placeholder-white/40 outline-none focus:border-[#00ff88]/50 transition-colors text-sm"
-              />
-              <motion.button
-                onClick={() => {
-                  const query = inputText.trim() || transcript.trim();
-                  if (query) {
-                    handleQuery(query);
-                    setInputText('');
-                    resetTranscript();
-                  }
-                }}
-                disabled={!inputText.trim() && !transcript.trim()}
-                whileTap={{ scale: 0.9 }}
-                className={`absolute right-2 p-2 rounded-lg transition-all ${
-                  (inputText.trim() || transcript.trim())
-                    ? 'bg-[#00ff88] text-black hover:bg-[#00ff88]/90'
-                    : 'bg-white/10 text-white/30 cursor-not-allowed'
-                }`}
-              >
-                <FiSend size={18} />
-              </motion.button>
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* No bottom controls in conversation mode */}
     </div>
   );
 }
